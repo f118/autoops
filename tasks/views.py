@@ -11,13 +11,16 @@ from guardian.core import ObjectPermissionChecker
 from  db.models import db_mysql, db_user
 from guardian.decorators import permission_required_or_403
 from django.views.generic import TemplateView, ListView, View, CreateView, UpdateView, DeleteView, DetailView
+import datetime
+import decimal
 
 
-from   tasks.ansible_runner.runner import AdHocRunner, PlayBookRunner
-from   tasks.ansible_runner.callback import CommandResultCallback
+from   tasks.ansible_2420.runner import AdHocRunner, CommandRunner
+from  tasks.ansible_2420.inventory import BaseInventory
+
 
 from  autoops import settings
-from names.password_crypt import encrypt_p,decrypt_p
+from names.password_crypt import decrypt_p
 
 
 
@@ -53,7 +56,8 @@ def cmd(request):  ##命令行
 
     if request.method == 'POST':
         ids = request.POST.getlist('id')
-        cmd = request.POST.get('cmd', None)
+        args = request.POST.getlist('args', None)
+        module =request.POST.getlist('module', None)
 
         user = User.objects.get(username=request.user)
         checker = ObjectPermissionChecker(user)
@@ -68,39 +72,59 @@ def cmd(request):  ##命令行
                 ret = {"error": error_3, "status": False}
                 return HttpResponse(json.dumps(ret))
 
-
-        user = request.user
         idstring = ','.join(ids1)
         if not ids:
             error_1 = "请选择主机"
             ret = {"error": error_1, "status": False}
             return HttpResponse(json.dumps(ret))
-        elif not cmd:
+        elif   args == ['']   :
             error_2 = "请输入命令"
             ret = {"error": error_2, "status": False}
             return HttpResponse(json.dumps(ret))
-
         obj = asset.objects.extra(where=['id IN (' + idstring + ')'])
+        ret = {'data':[]}
+        tasks=[]
 
-        ret = {}
+        for   x  in range(len(module)):
+           tasks.append({"action": {"module": module[x], "args": args[x]}, "name": 'task{}'.format(x)},)
 
-        ret['data'] = []
+
         for i in obj:
             try:
-                password = decrypt_p(i.system_user.password)
+                assets = [
+                    {
+                        "hostname": 'host',
+                        "ip": i.network_ip,
+                        "port": i.port,
+                        "username": i.system_user.username,
+                        "password": decrypt_p(i.system_user.password),
+                    },
+                ]
+                inventory = BaseInventory(assets)
+                runner = AdHocRunner(inventory)
+                retsult = runner.run(tasks, "all")
 
-                s = ssh(ip=i.network_ip, port=i.port, username=i.system_user.username, password=password,cmd=cmd)
-                historys = history.objects.create(ip=i.network_ip, root=i.system_user, port=i.port, cmd=cmd, user=user)
-                if s == None or s['data'] == '':
-                    s = {}
-                    s['ip'] = i.network_ip
-                    s['data'] = "返回值为空,可能是权限不够。"
-                ret['data'].append(s)
+                ret1=[]
+
+                for c  in range(len(module)):
+
+                    try:
+                        ret1.append(retsult.results_raw['ok']['host']['task{}'.format(c)]['stdout'])
+                    except Exception as e:
+                        if retsult.results_summary['dark'] == [''] :
+                            ret1.append("执行成功")
+                        else:
+                            ret1.append("命令有问题,{}".format(retsult.results_summary['dark']))
+
+                history.objects.create(ip=i.network_ip, root=i.system_user, port=i.port, cmd=args, user=user)
+
+                ret2={'ip':i.network_ip,'data':'\n'.join(ret1)}
+                ret['data'].append(ret2)
+
             except Exception as e:
                 ret['data'].append({"ip": i.network_ip, "data": "账号密码不对,{}".format(e)})
+
         return HttpResponse(json.dumps(ret))
-
-
 
 
 class ToolsListAll(TemplateView):
@@ -189,13 +213,7 @@ def tools_script_post(request):
         try:
             host_ids = request.POST.getlist('id', None)
             sh_id = request.POST.get('shid', None)
-
             user = request.user
-
-
-
-
-
 
             if not host_ids:
                 error1 = "请选择主机"
@@ -225,32 +243,29 @@ def tools_script_post(request):
                     with  open('tasks/script/test.sh', 'w+') as f:
                         f.write(s.tool_script)
                         a = 'tasks/script/{}.sh'.format(s.id)
-                    os.system("sed 's/\r//'  tasks/script/test.sh >  {}".format(a))
-
+                    os.system("sed  's/\r//'  tasks/script/test.sh >  {}".format(a))
                 elif s.tool_run_type == 1:
                     with  open('tasks/script/test.py', 'w+') as f:
                         f.write(s.tool_script)
                         p = 'tasks/script/{}.py'.format(s.id)
-                    os.system("sed 's/\r//'  tasks/script/test.py >  {}".format(p))
-                elif s.tool_run_type == 2:
-                    with  open('tasks/script/test.yml', 'w+') as f:
-                        f.write(s.tool_script)
-                        y = 'tasks/script/{}.yml'.format(s.id)
-                    os.system("sed 's/\r//'  tasks/script/test.yml >  {}".format(y))
+                        os.system("sed 's/\r//'  tasks/script/test.py >  {}".format(p))
+                # elif s.tool_run_type == 2:
+                #     with  open('tasks/script/test.yml', 'w+') as f:
+                #         f.write(s.tool_script)
+                #         y = 'tasks/script/{}.yml'.format(s.id)
+                #     os.system("sed 's/\r//'  tasks/script/test.yml >  {}".format(y))
                 else:
                     ret['status'] = False
-                    ret['error'] = '脚本类型错误,只能是shell、yml、python'
+                    ret['error'] = '脚本类型错误,只能是shell、python'
                     return HttpResponse(json.dumps(ret))
 
                 data1 = []
                 for h in host:
                     try:
-                        data2 = {}
                         password = decrypt_p(h.system_user.password)
-
                         assets = [
                             {
-                                "hostname": h.hostname,
+                                "hostname": 'host',
                                 "ip": h.network_ip,
                                 "port": h.port,
                                 "username": h.system_user.username,
@@ -260,41 +275,37 @@ def tools_script_post(request):
 
                         history.objects.create(ip=h.network_ip, root=h.system_user.username, port=h.port, cmd=s.name,
                                                user=user)
+
                         if s.tool_run_type == 0:
-                            task_tuple = (('script', a),)
-                            hoc = AdHocRunner(hosts=assets)
-                            hoc.results_callback = CommandResultCallback()
-                            r = hoc.run(task_tuple)
-                            data2['ip'] = h.network_ip
-                            data2['data'] = r['contacted'][h.hostname]['stdout']
-                            data1.append(data2)
-
-
+                            tasks1 = [{"action": {"module": "script", "args": "{}".format(a)}, "name": "1"},]
                         elif s.tool_run_type == 1:
-                            task_tuple = (('script', p),)
-                            hoc = AdHocRunner(hosts=assets)
-                            hoc.results_callback = CommandResultCallback()
-                            r = hoc.run(task_tuple)
-                            data2['ip'] = h.network_ip
-                            data2['data'] = r['contacted'][h.hostname]['stdout']
-                            data1.append(data2)
-                        elif s.tool_run_type == 2:
-                            play = PlayBookRunner(assets, playbook_path=y)
-                            b = play.run()
-                            data2['ip'] = h.network_ip
-                            data2['data'] = b['plays'][0]['tasks'][1]['hosts'][h.hostname]['stdout'] + \
-                                            b['plays'][0]['tasks'][1]['hosts'][h.hostname]['stderr']
-                            data1.append(data2)
-                        else:
-                            data2['ip'] = "脚本类型错误"
-                            data2['data'] = "脚本类型错误"
+                            tasks1 = [{"action": {"module": "script", "args": "{}".format(p)}, "name": "1"}, ]
+
+
+
+                        inventory = BaseInventory(assets)
+                        runner = AdHocRunner(inventory)
+
+                        retsu = runner.run(tasks1, "all")
+
+
+
+                        try:
+                            data2 = {'ip': h.network_ip, 'data': retsu.results_raw['ok']['host']['1']['stdout']}
+                        except Exception as e:
+                            if retsu.results_summary['dark'] == ['']:
+                                data2 = {'ip': h.network_ip, 'data': "执行成功"}
+                            else:
+                                data2 = {'ip': h.network_ip, 'data':"命令有问题,{}".format(retsu.results_summary['dark'])}
+
+                        data1.append(data2)
                     except  Exception as  e:
                         data2['ip'] = h.network_ip
-                        data2['data'] = "账号密码不对,或没有权限,请修改{},  请查看主机资产中的 主机名 ,此值不能为空,可随便填写一个。 ".format(e)
+                        data2['data'] = "账号密码不对,或没有权限,请修改  {},  ".format(e)
                         data1.append(data2)
-
                 ret['data'] = data1
                 return HttpResponse(json.dumps(ret))
+
         except Exception as e:
             ret['error'] = '未知错误 {}'.format(e)
             return HttpResponse(json.dumps(ret))
@@ -314,14 +325,14 @@ b = getattr(settings, 'Inception_port')
 In_port = int(b)
 
 
-def sql(user, password, host, port, sqls):  ## 审核
+def sql(user, password, host, port, databases, sqls):  ## 审核
     sql = '/*--user={0};--password={1};--host={2};--enable-check;--disable-remote-backup;--port={3};*/\
-    inception_magic_start;\
-    {4}\
-    inception_magic_commit;'.format(user, password, host, port, sqls)
+    inception_magic_start; \
+    use {4}; \
+    {5}\
+    inception_magic_commit;'.format(user, password, host, port,databases, sqls)
 
     print("----------------审核----------------------")
-
 
     try:
         ret = {"ip": host, "data": None}
@@ -359,14 +370,14 @@ def sql(user, password, host, port, sqls):  ## 审核
         return ret
 
 
-def sql_exe(user, password, host, port, sqls):  ## 执行
+def sql_exe(user, password, host, port,databases, sqls):  ## 执行
     sql = '/*--user={0};--password={1};--host={2};--execute=1;--enable-execute;--enable-ignore-warnings;--port={3};*/\
     inception_magic_start;\
-    {4}\
-    inception_magic_commit;'.format(user, password, host, port, sqls)
+    use {4}  ; \
+    {5}\
+    inception_magic_commit;'.format(user, password, host, port,databases, sqls)
 
     print("----------------执行----------------------")
-
     try:
         ret = {"ip": host, "data": None}
 
@@ -456,6 +467,189 @@ def sql_rb(user, password, host, port, sequence, backup_dbname):  ##   查询回
         return ret
 
 
+
+class DateEncoder(json.JSONEncoder ):  ## 格式化查询返回的内容
+        def default(self, obj):
+            if isinstance(obj, datetime.datetime):
+                return obj.strftime('%Y-%m-%d %H:%M:%S')
+            elif isinstance(obj, datetime.date):
+                return obj.strftime('%Y-%m-%d')
+            elif isinstance(obj, decimal.Decimal):
+                return str(obj)
+            else:
+                return json.JSONEncoder.default(self, obj)
+
+
+class  sql_query(object):  ## 查询接口
+    def __init__(self,host,port,user,password,db):
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.db = db
+
+
+    def connectmysql(self,sql):# 查询数据库 库名字
+        self.conn = pymysql.connect(host=self.host,port=self.port,password=self.password,db=self.db,charset='utf8')
+        self.cursor = self.conn.cursor(pymysql.cursors.SSCursor)
+        self.cursor.execute(sql)
+        result = self.cursor.fetchall()
+        self.conn.commit()
+        self.conn.close()
+        desc = self.cursor.description
+        return result
+
+    def connectmysql_select(self, sql):# 查询数据库
+        self.conn = pymysql.connect(host=self.host, port=self.port, password=self.password, db=self.db, charset='utf8')
+        self.cursor = self.conn.cursor(pymysql.cursors.SSCursor)
+        self.cursor.execute(sql)
+        result = self.cursor.fetchall()
+        self.conn.commit()
+        self.conn.close()
+        # desc = self.cursor.description
+
+        column_name_max_size = max(len(i[0]) for i in self.cursor.description)
+        data = []
+
+        for result in result:
+            row = map(lambda x, y: (x, y), (i[0] for i in self.cursor.description), result)
+            for each_column in row:
+                    data.append(str(each_column[0].rjust(column_name_max_size)) + " " + ":" + " " + str(
+                        each_column[1]))
+        return data
+
+
+
+@login_required(login_url="/login.html")
+def Inception_query_databases(request):  ##Inception 查询 数据库 名字
+
+    if request.method == 'POST':
+        ids = request.POST.getlist('id')
+        user = User.objects.get(username=request.user)
+        checker = ObjectPermissionChecker(user)
+        ids1 = []
+        for i in ids:
+            assets = db_mysql.objects.get(id=i)
+            if checker.has_perm('task_db_mysql', assets, ) == True:
+                ids1.append(i)
+            else:
+                error_3 = "数据库没有权限"
+                ret = {"error": error_3, "status": False}
+                return HttpResponse(json.dumps(ret))
+
+
+
+        user = request.user
+        idstring = ','.join(ids1)
+        if not ids:
+            error_1 = "请选择数据库"
+            ret = {"error": error_1, "status": False}
+            return HttpResponse(json.dumps(ret))
+
+
+        obj = db_mysql.objects.extra(where=['id IN (' + idstring + ')'])
+        ret = {}
+        ret['data'] = []
+
+        for i in obj:
+            try:
+                history.objects.create(ip=i.ip, root=i.db_user.username, port=i.port,
+                                                  cmd="查询数据库库名字".format(), user=user)
+
+                password = decrypt_p(i.db_user.password)
+
+                a = sql_query(user=i.db_user.username, password=password, host=i.ip, port=i.port,db='mysql')
+                s1 = a.connectmysql(sql="select SCHEMA_NAME from information_schema.SCHEMATA;")
+
+                s2 = []
+                for  z  in  s1:
+                        s2.append(z[0])
+
+                s = {'ip':i.ip,'data':s2}
+                ret['data'].append(s)
+
+            except Exception as e:
+                ret['data'].append({"ip": i.ip, "data": "账号密码不对,{}".format(e)})
+        return HttpResponse(json.dumps(ret))
+
+
+
+
+@login_required(login_url="/login.html")
+def Inception_query(request):  ##查询数据库
+
+    if request.method == 'POST':
+        ids = request.POST.getlist('id')
+
+        sqls = request.POST.get('sql')
+        db = request.POST.get('databases')
+
+
+        sqls1= sqls.split(';')
+
+        for s in sqls1:
+            if '' in sqls1:
+                sqls1.remove('')
+
+        for j in range(len(sqls1)):
+            j1 = sqls1[j].strip()[:4]
+            if j1 == 'show'   or j1 == 'sele'  or j1 == 'desc' :
+                break
+            else:
+                rets = {"error": "输入的命令有误，禁止使用非 select , show,desc", "status": False}
+                return HttpResponse(json.dumps(rets))
+
+
+        user = User.objects.get(username=request.user)
+        checker = ObjectPermissionChecker(user)
+        ids1 = []
+        for i in ids:
+            assets = db_mysql.objects.get(id=i)
+            if checker.has_perm('task_db_mysql', assets, ) == True:
+                ids1.append(i)
+            else:
+                error_3 = "数据库没有权限"
+                ret = {"error": error_3, "status": False}
+                return HttpResponse(json.dumps(ret))
+        user = request.user
+        idstring = ','.join(ids1)
+
+
+        if not ids:
+            error_1 = "请选择数据库"
+            ret = {"error": error_1, "status": False}
+            return HttpResponse(json.dumps(ret))
+        elif    not sqls:
+            error_2 = "请输入要查询的语句"
+
+            ret = {"error": error_2, "status": False}
+            return HttpResponse(json.dumps(ret))
+
+
+        obj = db_mysql.objects.extra(where=['id IN (' + idstring + ')'])
+        ret = {}
+        ret['data'] = []
+
+        for i in obj:
+            try:
+                history.objects.create(ip=i.ip, root=i.db_user.username, port=i.port,cmd="查询:{}".format(sqls), user=user)
+
+                password = decrypt_p(i.db_user.password)
+
+                query = sql_query(user=i.db_user.username, password=password, host=i.ip, port=i.port,db=db)
+                re = query.connectmysql_select(sql=sqls)
+
+                re2 = json.dumps(re, cls=DateEncoder)
+                re4 = re2.split(",")
+                re5 = {'ip':i.ip,'data': '\n'.join(re4)}
+                ret['data'].append(re5)
+
+            except Exception as e:
+                ret['data'].append({"ip": i.ip, "data": "账号密码不对,查询失败{}".format(e)})
+        return HttpResponse(json.dumps(ret))
+
+
+
 @login_required(login_url="/login.html")
 def Inception(request):  ##Inception 审核
 
@@ -467,13 +661,14 @@ def Inception(request):  ##Inception 审核
     if request.method == 'POST':
         ids = request.POST.getlist('id')
         sql_db = request.POST.get('sql', None)
+        databases = request.POST.get('databases', None)
 
         user = User.objects.get(username=request.user)
         checker = ObjectPermissionChecker(user)
         ids1 = []
         for i in ids:
             assets = db_mysql.objects.get(id=i)
-            if checker.has_perm('task_db_mysql', db_mysql, ) == True:
+            if checker.has_perm('task_db_mysql', assets, ) == True:
                 ids1.append(i)
             else:
                 error_3 = "数据库没有权限"
@@ -499,12 +694,12 @@ def Inception(request):  ##Inception 审核
 
         for i in obj:
             try:
-                historys = history.objects.create(ip=i.ip, root=i.db_user.username, port=i.port,
+                history.objects.create(ip=i.ip, root=i.db_user.username, port=i.port,
                                                   cmd="审核:{0}".format(sql_db), user=user)
 
                 password = decrypt_p(i.db_user.password)
 
-                s = sql(user=i.db_user.username, password=password, host=i.ip, port=i.port, sqls=sql_db)
+                s = sql(user=i.db_user.username, password=password, host=i.ip, port=i.port,databases=databases,sqls=sql_db)
 
                 if s == None or s['data'] == '':
                     s = {}
@@ -512,8 +707,16 @@ def Inception(request):  ##Inception 审核
                     s['data'] = "返回值为空,可能是权限不够。"
                 ret['data'].append(s)
             except Exception as e:
-                ret['data'].append({"ip": i.ip, "data": "账号密码不对,{0}  如果出现 invalid literal for int() with base 10: 'Inception2',这个报错，请按照script/install_inception.sh 最下面，修改文件 即可".format(e)})
+
+                ret['data'].append({"ip": i.ip, "data": "账号密码不对,{0}".format(e)})
         return HttpResponse(json.dumps(ret))
+
+
+
+
+
+
+
 
 
 @login_required(login_url="/login.html")
@@ -522,13 +725,17 @@ def Inception_exe(request):  ##Inception 执行
     if request.method == 'POST':
         ids = request.POST.getlist('id')
         sql_db = request.POST.get('sql', None)
+        databases = request.POST.get('databases', None)
+
+
+
 
         user = User.objects.get(username=request.user)
         checker = ObjectPermissionChecker(user)
         ids1 = []
         for i in ids:
             assets = db_mysql.objects.get(id=i)
-            if checker.has_perm('task_db_mysql', db_mysql, ) == True:
+            if checker.has_perm('task_db_mysql',assets, ) == True:
                 ids1.append(i)
 
             else:
@@ -555,13 +762,11 @@ def Inception_exe(request):  ##Inception 执行
 
         for i in obj:
             try:
-                historys = history.objects.create(ip=i.ip, root=i.db_user.username, port=i.port,
+                history.objects.create(ip=i.ip, root=i.db_user.username, port=i.port,
                                                   cmd="执行:{}".format(sql_db), user=user)
 
                 password = decrypt_p(i.db_user.password)
-
-
-                s = sql_exe(user=i.db_user.username, password=password, host=i.ip, port=i.port, sqls=sql_db)
+                s = sql_exe(user=i.db_user.username, password=password, host=i.ip, port=i.port, databases=databases,sqls=sql_db)
 
                 if s == None or s['data'] == '':
                     s = {}

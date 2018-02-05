@@ -1,11 +1,6 @@
 from django.db import models
 
 
-
-
-
-
-
 class history(models.Model):
     root = models.CharField(max_length=32, verbose_name='用户', null=True)
     ip = models.GenericIPAddressField(verbose_name='IP',null=True)
@@ -31,7 +26,7 @@ class toolsscript(models.Model):
     TOOL_RUN_TYPE = (
         (0, 'shell'),
         (1, 'python'),
-        (2, 'yml'),
+        # (2, 'yml'),
     )
 
     name = models.CharField(max_length=255, verbose_name='工具名称',unique=True)

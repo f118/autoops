@@ -22,7 +22,9 @@ from pyecharts import Gauge, Line
 import threading, time, datetime
 
 
-from  tasks.ansible_runner.runner import AdHocRunner
+from   tasks.ansible_2420.runner import AdHocRunner, CommandRunner
+from  tasks.ansible_2420.inventory import BaseInventory
+
 
 
 class AssetListAll(TemplateView):
@@ -189,9 +191,13 @@ class AssetDel(View):
         ret = {'status': True, 'error': None, }
         try:
             id = request.POST.get('nid', None)
-            user = User.objects.get(username=request.user)
-            checker = ObjectPermissionChecker(user)
+            print(id)
+            users= User.objects.get(username=request.user)
+            print(users)
+            checker = ObjectPermissionChecker(users)
             assets = asset.objects.get(id=id)
+            print(assets)
+
             if checker.has_perm('delete_asset', assets, ) == True:
                 assets.delete()
         except Exception as e:
@@ -258,11 +264,20 @@ def asset_hardware_update(request):
                 },
             ]
 
-            task_tuple = (('setup', ''),)
-            runner = AdHocRunner(assets)
 
-            result = runner.run(task_tuple=task_tuple, pattern='all', task_name='Ansible Ad-hoc')
-            data = result['contacted']['host'][0]['ansible_facts']
+
+            inventory = BaseInventory(assets)
+            runner = AdHocRunner(inventory)
+
+            tasks = [
+                {"action": {"module": "setup", "args": ""}, "name": "setup"},
+            ]
+            result = runner.run(tasks, "all")
+
+            data = result.results_raw['ok']['host']['setup']['ansible_facts']
+
+
+
 
             hostname = data['ansible_nodename']
             system = data['ansible_distribution'] + " " + data['ansible_distribution_version']
@@ -351,9 +366,7 @@ def asset_hardware_update(request):
 
         except Exception as e:
             ret['status'] = False
-            ret[
-                'error'] = '登陆账号权限不够| 请在被添加的主机安装  parted  ipmitool dmidecode  | 删除  主服务器/root/.ssh/known_hosts  文件'.format(
-                e)
+            ret['error'] = '登陆账号权限不够| 请在被添加的主机安装  parted  ipmitool dmidecode  |    或者 删除  主服务器/root/.ssh/known_hosts  文件'.format(e)
         return HttpResponse(json.dumps(ret))
 
 
@@ -369,14 +382,12 @@ def asset_web_ssh(request):
         ret = {}
         try:
             if checker.has_perm('task_asset', a) == True:
-                ip = obj.network_ip + ":" + str(obj.port)
-
+                ip = obj.network_ip
+                port = obj.port
                 username = obj.system_user.username
-                password1 = obj.system_user.password
-                password = decrypt_p(password1)
+                password = obj.system_user.password
 
-                ret = {"ip": ip, "username": username, 'password': password, "static": True}
-
+                ret = {"ip": ip,'port':port,"username": username, 'password': password, "static": True}
                 login_ip = request.META['REMOTE_ADDR']
 
                 web_history.objects.create(user=request.user, ip=login_ip, login_user=obj.system_user.username, host=ip)
@@ -388,15 +399,15 @@ def asset_web_ssh(request):
 
 
 def Gauge_cpumem(attr, data):
-    bar = Gauge("", width=600, height=300)
+    bar = Gauge("", height=300)
     bar.add("", attr, data)
     return bar
 
 
 def Line_network(d, title, title1, date, network_in, network_put):
     bar = Line(d, width=1600, height=500)
-    bar.add(title, date, network_in)
-    bar.add(title1, date, network_put)
+    bar.add(title, date, network_in,is_datazoom_show=True)
+    bar.add(title1, date, network_put,is_datazoom_show=True)
     return bar
 
 

@@ -66,6 +66,7 @@
                             <div class="col-sm-10 col-sm-offset-0">
                                 <h3>基本</h3>
 
+
                                 {% bootstrap_field form.name layout="horizontal" %}
                                 {% bootstrap_field form.username layout="horizontal" %}
                                 {% bootstrap_field form.password layout="horizontal" %}
@@ -96,7 +97,16 @@
 
 
 {% block footer-js %}
+<script>
+  function add_tr(obj) {
+    var tr = $(obj).parent();
+    tr.after(tr.clone());
+  }
 
+   function del_tr(obj) {
+    $(obj).parent().remove();
+  }
+</script>
 
 {% endblock %}
 
